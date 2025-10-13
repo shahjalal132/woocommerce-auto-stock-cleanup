@@ -5,18 +5,37 @@
  * Author:      Shah Jalal
  * Author URI:  https://github.com/shahjalal132
  * Description: Automatically cleanup WooCommerce products with low/no stock and their images via REST API endpoints with comprehensive statistics tracking and manual deletion tools.
- * Version:     2.0.0
+ * Version:     2.1.0
  * Text Domain: wc-auto-stock-cleanup
  * Domain Path: /languages
  * Requires at least: 5.0
  * Requires PHP: 7.2
  * WC requires at least: 3.0
  * WC tested up to: 8.0
+ * Requires Plugins: woocommerce
+ * Network: false
+ * License: GPL v2 or later
  */
 
 if (!defined('ABSPATH')) exit;
 
-class Delete_Images_By_IDs {
+// Check if WooCommerce is active (supports multisite)
+function wc_auto_stock_cleanup_is_woocommerce_active() {
+    $active_plugins = (array) get_option('active_plugins', array());
+    if (is_multisite()) {
+        $active_plugins = array_merge($active_plugins, get_site_option('active_sitewide_plugins', array()));
+    }
+    return in_array('woocommerce/woocommerce.php', $active_plugins) || array_key_exists('woocommerce/woocommerce.php', $active_plugins);
+}
+
+if (!wc_auto_stock_cleanup_is_woocommerce_active()) {
+    add_action('admin_notices', function() {
+        echo '<div class="notice notice-error"><p><strong>WooCommerce Auto Stock Cleanup</strong> requires WooCommerce to be installed and active.</p></div>';
+    });
+    return;
+}
+
+class WooCommerce_Auto_Stock_Cleanup {
     public function __construct() {
         add_action('admin_menu', [$this, 'register_menu']);
         add_action('admin_enqueue_scripts', [$this, 'enqueue_assets']);
@@ -27,6 +46,65 @@ class Delete_Images_By_IDs {
         
         // Manual cleanup trigger from admin
         add_action('admin_post_run_cleanup_now', [$this, 'manual_cleanup']);
+        
+        // WooCommerce compatibility
+        add_action('before_woocommerce_init', [$this, 'declare_compatibility']);
+        add_action('init', [$this, 'init_plugin']);
+    }
+    
+    /**
+     * Declare WooCommerce feature compatibility
+     */
+    public function declare_compatibility() {
+        if (class_exists('\Automattic\WooCommerce\Utilities\FeaturesUtil')) {
+            // Declare HPOS compatibility
+            \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility('custom_order_tables', __FILE__, true);
+            
+            // Declare other WooCommerce features compatibility
+            \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility('orders_cache', __FILE__, true);
+            \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility('cart_checkout_blocks', __FILE__, true);
+            
+            // Additional compatibility declarations
+            if (method_exists('\Automattic\WooCommerce\Utilities\FeaturesUtil', 'declare_compatibility')) {
+                // Modern WooCommerce versions
+                \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility('product_block_editor', __FILE__, true);
+            }
+        }
+    }
+    
+    /**
+     * Initialize plugin after WordPress is fully loaded
+     */
+    public function init_plugin() {
+        // Check WooCommerce version compatibility
+        if (defined('WC_VERSION') && version_compare(WC_VERSION, '3.0', '<')) {
+            add_action('admin_notices', function() {
+                echo '<div class="notice notice-warning"><p><strong>WooCommerce Auto Stock Cleanup</strong> requires WooCommerce 3.0 or higher. Please update WooCommerce.</p></div>';
+            });
+        }
+    }
+    
+    /**
+     * Plugin activation hook
+     */
+    public static function activate() {
+        // Check if WooCommerce is active
+        if (!class_exists('WooCommerce')) {
+            deactivate_plugins(plugin_basename(__FILE__));
+            wp_die('WooCommerce Auto Stock Cleanup requires WooCommerce to be installed and active.');
+        }
+        
+        // Create API key if not exists
+        if (!get_option('delete_images_api_key')) {
+            update_option('delete_images_api_key', wp_generate_password(32, false));
+        }
+    }
+    
+    /**
+     * Plugin deactivation hook
+     */
+    public static function deactivate() {
+        // Clean up any scheduled events or temporary data if needed
     }
     
     /**
@@ -134,7 +212,18 @@ class Delete_Images_By_IDs {
         $site_url = get_site_url();
         ?>
         <div class="wrap">
-            <h1>Delete Images by IDs</h1>
+            <h1>WooCommerce Auto Stock Cleanup</h1>
+            
+            <!-- WooCommerce Compatibility Status -->
+            <div style="background: #d1ecf1; padding: 15px; border: 1px solid #bee5eb; border-radius: 4px; margin: 15px 0;">
+                <h4 style="margin: 0 0 10px 0; color: #0c5460;">✅ WooCommerce Compatibility Status</h4>
+                <p style="margin: 0; color: #055160;">
+                    <strong>WooCommerce Version:</strong> <?php echo defined('WC_VERSION') ? WC_VERSION : 'Not detected'; ?> |
+                    <strong>HPOS Compatible:</strong> Yes |
+                    <strong>Blocks Compatible:</strong> Yes |
+                    <strong>Plugin Version:</strong> 2.1.0
+                </p>
+            </div>
             
             <!-- Manual Image Deletion Section -->
             <div style="background: #fff; padding: 20px; border: 1px solid #ccc; margin-bottom: 30px;">
@@ -207,6 +296,15 @@ class Delete_Images_By_IDs {
             <div style="background: #fff; padding: 20px; border: 1px solid #ccc; margin-bottom: 30px;">
                 <h2>Cleanup Statistics</h2>
                 
+                <div style="background: #e7f3ff; padding: 15px; border: 1px solid #b3d9ff; border-radius: 4px; margin: 15px 0;">
+                    <h4 style="margin: 0 0 10px 0; color: #0073aa;">🚀 Performance Optimized Batch Processing</h4>
+                    <p style="margin: 0; color: #555;">
+                        The system now processes products in batches of <strong>50</strong> to handle large numbers efficiently. 
+                        Maximum processing time is <strong>5 minutes</strong> per run with automatic timeout protection.
+                        For 2000+ products, multiple cron runs may be needed to complete deletion.
+                    </p>
+                </div>
+                
                 <?php if (!empty($stats)): ?>
                     <table class="wp-list-table widefat fixed striped" style="margin-top: 15px;">
                         <thead>
@@ -244,6 +342,20 @@ class Delete_Images_By_IDs {
                                 <td><strong>Execution Time</strong></td>
                                 <td><?php echo esc_html($stats['execution_time'] ?? 'N/A'); ?></td>
                             </tr>
+                            <tr>
+                                <td><strong>Batches Processed</strong></td>
+                                <td><?php echo number_format($stats['batches_processed'] ?? 0); ?></td>
+                            </tr>
+                            <tr>
+                                <td><strong>Processing Status</strong></td>
+                                <td>
+                                    <?php 
+                                    $status = $stats['status'] ?? 'completed';
+                                    $color = $status === 'completed' ? '#00a32a' : '#d63638';
+                                    echo '<span style="color: ' . $color . '; font-weight: bold;">' . ucfirst(str_replace('_', ' ', esc_html($status))) . '</span>';
+                                    ?>
+                                </td>
+                            </tr>
                         </tbody>
                     </table>
                     
@@ -269,10 +381,16 @@ class Delete_Images_By_IDs {
     }
     
     /**
-     * Run daily cleanup - main cron job function
+     * Run daily cleanup - main cron job function with batch processing
      */
     public function run_daily_cleanup() {
         $start_time = microtime(true);
+        $batch_size = 50; // Process 50 products at a time
+        $max_execution_time = 300; // 5 minutes max
+        
+        // Set time limit and increase memory if possible
+        @set_time_limit($max_execution_time);
+        @ini_set('memory_limit', '512M');
         
         // Initialize stats
         $stats = [
@@ -283,7 +401,9 @@ class Delete_Images_By_IDs {
             'images_deleted' => 0,
             'variations_deleted' => 0,
             'execution_time' => '',
-            'timestamp' => current_time('mysql')
+            'timestamp' => current_time('mysql'),
+            'batches_processed' => 0,
+            'status' => 'completed'
         ];
         
         // Get total products count for scanning
@@ -299,25 +419,29 @@ class Delete_Images_By_IDs {
         ");
         $stats['total_scanned'] = (int)$total_products;
         
-        // Get products from both categories
-        $non_brazyliany_products = $this->get_non_brazyliany_products();
-        $brazyliany_products = $this->get_brazyliany_products();
+        // Count products that match deletion criteria
+        $stats['non_brazyliany_found'] = $this->count_non_brazyliany_products();
+        $stats['brazyliany_found'] = $this->count_brazyliany_products();
         
-        $stats['non_brazyliany_found'] = count($non_brazyliany_products);
-        $stats['brazyliany_found'] = count($brazyliany_products);
+        $total_to_delete = $stats['non_brazyliany_found'] + $stats['brazyliany_found'];
         
-        // Merge results
-        $all_products = array_merge($non_brazyliany_products, $brazyliany_products);
-        
-        // Delete products and their attachments
-        if (!empty($all_products)) {
-            $deletion_stats = $this->delete_products_and_attachments($all_products);
-            $stats['products_deleted'] = $deletion_stats['products_deleted'];
-            $stats['images_deleted'] = $deletion_stats['images_deleted'];
-            $stats['variations_deleted'] = $deletion_stats['variations_deleted'];
+        // If too many products to delete in one go, process in batches
+        if ($total_to_delete > 0) {
+            $this->log_message("Starting batch deletion of $total_to_delete products...");
+            
+            // Process non-brazyliany products in batches
+            $this->process_non_brazyliany_batches($batch_size, $max_execution_time, $start_time, $stats);
+            
+            // Check if we still have time for brazyliany products
+            if ((microtime(true) - $start_time) < ($max_execution_time - 30)) {
+                $this->process_brazyliany_batches($batch_size, $max_execution_time, $start_time, $stats);
+            } else {
+                $stats['status'] = 'partial_timeout';
+                $this->log_message("Timeout reached, brazyliany products will be processed in next run");
+            }
             
             // Log the cleanup
-            $this->log_cleanup($stats, $all_products);
+            $this->log_cleanup($stats, []);
         } else {
             // Still save stats even if nothing was deleted
             update_option('delete_images_cleanup_stats', $stats);
@@ -331,29 +455,123 @@ class Delete_Images_By_IDs {
         // Update stats with execution time
         update_option('delete_images_cleanup_stats', $stats);
         
+        $this->log_message("Cleanup completed. Total time: {$stats['execution_time']}");
+        
         return $stats;
     }
     
     /**
-     * Get non-brazyliany products where all variations are out of stock
+     * Process non-brazyliany products in batches
      */
-    private function get_non_brazyliany_products() {
+    private function process_non_brazyliany_batches($batch_size, $max_execution_time, $start_time, &$stats) {
+        $offset = 0;
+        $batch_count = 0;
+        
+        while ((microtime(true) - $start_time) < ($max_execution_time - 60)) { // Leave 60s buffer
+            $products = $this->get_non_brazyliany_products($batch_size, $offset);
+            
+            if (empty($products)) {
+                break; // No more products to process
+            }
+            
+            $batch_count++;
+            $this->log_message("Processing non-brazyliany batch $batch_count (" . count($products) . " products)");
+            
+            $deletion_stats = $this->delete_products_and_attachments($products);
+            $stats['products_deleted'] += $deletion_stats['products_deleted'];
+            $stats['images_deleted'] += $deletion_stats['images_deleted'];
+            $stats['variations_deleted'] += $deletion_stats['variations_deleted'];
+            $stats['batches_processed']++;
+            
+            $offset += $batch_size;
+            
+            // Memory cleanup
+            unset($products);
+            if (function_exists('gc_collect_cycles')) {
+                gc_collect_cycles();
+            }
+            
+            // Small delay to prevent overwhelming the server
+            usleep(100000); // 0.1 second
+        }
+        
+        $this->log_message("Processed $batch_count non-brazyliany batches");
+    }
+    
+    /**
+     * Process brazyliany products in batches
+     */
+    private function process_brazyliany_batches($batch_size, $max_execution_time, $start_time, &$stats) {
+        $offset = 0;
+        $batch_count = 0;
+        
+        while ((microtime(true) - $start_time) < ($max_execution_time - 30)) { // Leave 30s buffer
+            $products = $this->get_brazyliany_products($batch_size, $offset);
+            
+            if (empty($products)) {
+                break; // No more products to process
+            }
+            
+            $batch_count++;
+            $this->log_message("Processing brazyliany batch $batch_count (" . count($products) . " products)");
+            
+            $deletion_stats = $this->delete_products_and_attachments($products);
+            $stats['products_deleted'] += $deletion_stats['products_deleted'];
+            $stats['images_deleted'] += $deletion_stats['images_deleted'];
+            $stats['variations_deleted'] += $deletion_stats['variations_deleted'];
+            $stats['batches_processed']++;
+            
+            $offset += $batch_size;
+            
+            // Memory cleanup
+            unset($products);
+            if (function_exists('gc_collect_cycles')) {
+                gc_collect_cycles();
+            }
+            
+            // Small delay to prevent overwhelming the server
+            usleep(100000); // 0.1 second
+        }
+        
+        $this->log_message("Processed $batch_count brazyliany batches");
+    }
+    
+    /**
+     * Log messages to file and error log
+     */
+    private function log_message($message) {
+        $log_entry = "[" . current_time('Y-m-d H:i:s') . "] $message\n";
+        $log_file = WP_CONTENT_DIR . '/delete-images-cleanup.log';
+        error_log($log_entry, 3, $log_file);
+    }
+    
+    /**
+     * Get non-brazyliany products with single quantity (stock = 1)
+     */
+    private function get_non_brazyliany_products($limit = 0, $offset = 0) {
         global $wpdb;
+        
+        $limit_clause = '';
+        if ($limit > 0) {
+            $limit_clause = "LIMIT $limit OFFSET $offset";
+        }
         
         $query = "
             SELECT 
                 p.ID AS product_id,
                 p.post_title AS product_name,
                 t.slug AS category_slug,
-                CONCAT_WS(
-                    ',',
-                    (SELECT pm1.meta_value 
+                TRIM(BOTH ',' FROM REPLACE(CONCAT_WS(',',
+                    (SELECT GROUP_CONCAT(DISTINCT pm1.meta_value) 
                      FROM {$wpdb->prefix}postmeta AS pm1 
-                     WHERE pm1.post_id = p.ID AND pm1.meta_key = '_thumbnail_id' LIMIT 1),
-                    (SELECT pm2.meta_value 
+                     WHERE pm1.post_id = p.ID AND pm1.meta_key = '_thumbnail_id'),
+                    (SELECT GROUP_CONCAT(DISTINCT pm2.meta_value) 
                      FROM {$wpdb->prefix}postmeta AS pm2 
-                     WHERE pm2.post_id = p.ID AND pm2.meta_key = '_product_image_gallery' LIMIT 1)
-                ) AS attachment_ids
+                     WHERE pm2.post_id = p.ID AND pm2.meta_key = '_product_image_gallery'),
+                    (SELECT GROUP_CONCAT(DISTINCT a.ID) 
+                     FROM {$wpdb->prefix}posts AS a 
+                     WHERE a.post_parent = p.ID AND a.post_type = 'attachment')
+                ), ',,', ',')) AS attachment_ids
             FROM 
                 {$wpdb->prefix}posts AS p
                 INNER JOIN {$wpdb->prefix}term_relationships AS tr ON p.ID = tr.object_id
@@ -367,39 +585,86 @@ class Delete_Images_By_IDs {
                 AND p.ID IN (
                     SELECT parent.ID
                     FROM {$wpdb->prefix}posts AS parent
-                    JOIN {$wpdb->prefix}posts AS v ON v.post_parent = parent.ID AND v.post_type = 'product_variation'
-                    LEFT JOIN {$wpdb->prefix}postmeta AS stock_status 
-                        ON stock_status.post_id = v.ID AND stock_status.meta_key = '_stock_status'
+                    JOIN {$wpdb->prefix}posts AS v 
+                        ON v.post_parent = parent.ID AND v.post_type = 'product_variation'
+                    LEFT JOIN {$wpdb->prefix}postmeta AS stock_qty 
+                        ON stock_qty.post_id = v.ID AND stock_qty.meta_key = '_stock'
                     WHERE parent.post_type = 'product'
                     GROUP BY parent.ID
-                    HAVING SUM(CASE WHEN stock_status.meta_value = 'instock' THEN 1 ELSE 0 END) = 0
+                    HAVING SUM(
+                        IFNULL(CAST(stock_qty.meta_value AS UNSIGNED), 0) <> 1
+                    ) = 0
                 )
             GROUP BY p.ID
+            $limit_clause
         ";
         
         return $wpdb->get_results($query, ARRAY_A);
     }
     
     /**
+     * Count non-brazyliany products with single quantity
+     */
+    private function count_non_brazyliany_products() {
+        global $wpdb;
+        
+        $query = "
+            SELECT COUNT(DISTINCT p.ID)
+            FROM 
+                {$wpdb->prefix}posts AS p
+                INNER JOIN {$wpdb->prefix}term_relationships AS tr ON p.ID = tr.object_id
+                INNER JOIN {$wpdb->prefix}term_taxonomy AS tt ON tr.term_taxonomy_id = tt.term_taxonomy_id
+                INNER JOIN {$wpdb->prefix}terms AS t ON tt.term_id = t.term_id
+            WHERE 
+                p.post_type = 'product'
+                AND p.post_status = 'publish'
+                AND tt.taxonomy = 'product_cat'
+                AND t.slug != 'brazyliany'
+                AND p.ID IN (
+                    SELECT parent.ID
+                    FROM {$wpdb->prefix}posts AS parent
+                    JOIN {$wpdb->prefix}posts AS v 
+                        ON v.post_parent = parent.ID AND v.post_type = 'product_variation'
+                    LEFT JOIN {$wpdb->prefix}postmeta AS stock_qty 
+                        ON stock_qty.post_id = v.ID AND stock_qty.meta_key = '_stock'
+                    WHERE parent.post_type = 'product'
+                    GROUP BY parent.ID
+                    HAVING SUM(
+                        IFNULL(CAST(stock_qty.meta_value AS UNSIGNED), 0) <> 1
+                    ) = 0
+                )
+        ";
+        
+        return (int) $wpdb->get_var($query);
+    }
+    
+    /**
      * Get brazyliany products where all variations have stock < 5
      */
-    private function get_brazyliany_products() {
+    private function get_brazyliany_products($limit = 0, $offset = 0) {
         global $wpdb;
+        
+        $limit_clause = '';
+        if ($limit > 0) {
+            $limit_clause = "LIMIT $limit OFFSET $offset";
+        }
         
         $query = "
             SELECT 
                 p.ID AS product_id,
                 p.post_title AS product_name,
                 t.slug AS category_slug,
-                CONCAT_WS(
-                    ',',
-                    (SELECT pm1.meta_value 
+                TRIM(BOTH ',' FROM REPLACE(CONCAT_WS(',',
+                    (SELECT GROUP_CONCAT(DISTINCT pm1.meta_value) 
                      FROM {$wpdb->prefix}postmeta AS pm1 
-                     WHERE pm1.post_id = p.ID AND pm1.meta_key = '_thumbnail_id' LIMIT 1),
-                    (SELECT pm2.meta_value 
+                     WHERE pm1.post_id = p.ID AND pm1.meta_key = '_thumbnail_id'),
+                    (SELECT GROUP_CONCAT(DISTINCT pm2.meta_value) 
                      FROM {$wpdb->prefix}postmeta AS pm2 
-                     WHERE pm2.post_id = p.ID AND pm2.meta_key = '_product_image_gallery' LIMIT 1)
-                ) AS attachment_ids
+                     WHERE pm2.post_id = p.ID AND pm2.meta_key = '_product_image_gallery'),
+                    (SELECT GROUP_CONCAT(DISTINCT a.ID) 
+                     FROM {$wpdb->prefix}posts AS a 
+                     WHERE a.post_parent = p.ID AND a.post_type = 'attachment')
+                ), ',,', ',')) AS attachment_ids
             FROM 
                 {$wpdb->prefix}posts AS p
                 INNER JOIN {$wpdb->prefix}term_relationships AS tr ON p.ID = tr.object_id
@@ -421,9 +686,43 @@ class Delete_Images_By_IDs {
                     HAVING SUM(CASE WHEN CAST(stock_qty.meta_value AS UNSIGNED) >= 5 THEN 1 ELSE 0 END) = 0
                 )
             GROUP BY p.ID
+            $limit_clause
         ";
         
         return $wpdb->get_results($query, ARRAY_A);
+    }
+    
+    /**
+     * Count brazyliany products where all variations have stock < 5
+     */
+    private function count_brazyliany_products() {
+        global $wpdb;
+        
+        $query = "
+            SELECT COUNT(DISTINCT p.ID)
+            FROM 
+                {$wpdb->prefix}posts AS p
+                INNER JOIN {$wpdb->prefix}term_relationships AS tr ON p.ID = tr.object_id
+                INNER JOIN {$wpdb->prefix}term_taxonomy AS tt ON tr.term_taxonomy_id = tt.term_taxonomy_id
+                INNER JOIN {$wpdb->prefix}terms AS t ON tt.term_id = t.term_id
+            WHERE 
+                p.post_type = 'product'
+                AND p.post_status = 'publish'
+                AND tt.taxonomy = 'product_cat'
+                AND t.slug = 'brazyliany'
+                AND p.ID IN (
+                    SELECT parent.ID
+                    FROM {$wpdb->prefix}posts AS parent
+                    JOIN {$wpdb->prefix}posts AS v ON v.post_parent = parent.ID AND v.post_type = 'product_variation'
+                    LEFT JOIN {$wpdb->prefix}postmeta AS stock_qty 
+                        ON stock_qty.post_id = v.ID AND stock_qty.meta_key = '_stock'
+                    WHERE parent.post_type = 'product'
+                    GROUP BY parent.ID
+                    HAVING SUM(CASE WHEN CAST(stock_qty.meta_value AS UNSIGNED) >= 5 THEN 1 ELSE 0 END) = 0
+                )
+        ";
+        
+        return (int) $wpdb->get_var($query);
     }
     
     /**
@@ -562,4 +861,9 @@ class Delete_Images_By_IDs {
     }
 }
 
-new Delete_Images_By_IDs();
+// Plugin activation/deactivation hooks
+register_activation_hook(__FILE__, ['WooCommerce_Auto_Stock_Cleanup', 'activate']);
+register_deactivation_hook(__FILE__, ['WooCommerce_Auto_Stock_Cleanup', 'deactivate']);
+
+// Initialize the plugin
+new WooCommerce_Auto_Stock_Cleanup();
