@@ -1,9 +1,17 @@
 <?php
 /**
- * Plugin Name: Delete Images by IDs
- * Description: Delete WordPress attachments by their IDs with AJAX and a progress bar. Automatically delete products with no stock via REST API endpoints with detailed statistics.
- * Version: 2.0
- * Author: Shah Jalal
+ * Plugin Name: WooCommerce Auto Stock Cleanup
+ * Plugin URI:  https://github.com/shahjalal132/woocommerce-auto-stock-cleanup
+ * Author:      Shah Jalal
+ * Author URI:  https://github.com/shahjalal132
+ * Description: Automatically cleanup WooCommerce products with low/no stock and their images via REST API endpoints with comprehensive statistics tracking and manual deletion tools.
+ * Version:     2.0.0
+ * Text Domain: wc-auto-stock-cleanup
+ * Domain Path: /languages
+ * Requires at least: 5.0
+ * Requires PHP: 7.2
+ * WC requires at least: 3.0
+ * WC tested up to: 8.0
  */
 
 if (!defined('ABSPATH')) exit;
