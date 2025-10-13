@@ -1,6 +1,6 @@
 # WooCommerce Auto Stock Cleanup Plugin
 
-**Version:** 2.1.0  
+**Version:** 2.1.1  
 **Author:** Shah Jalal
 
 ## Description
@@ -313,6 +313,12 @@ Using manual cron jobs via REST API instead of WordPress's built-in cron system 
 For issues or feature requests, contact Shah Jalal.
 
 ## Changelog
+
+### Version 2.1.1
+- **FIXED**: cURL authentication issue - API now works correctly from terminal/cron jobs
+- **Enhanced**: Multi-method header detection (getallheaders, apache_request_headers, $_SERVER)
+- **Improved**: Case-insensitive header matching for better compatibility
+- **Added**: CURL-AUTH-FIX.md guide for troubleshooting authentication issues
 
 ### Version 2.1.0
 - **WooCommerce Compatibility**: Full HPOS and WooCommerce Blocks compatibility

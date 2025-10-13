@@ -5,7 +5,7 @@
  * Author:      Shah Jalal
  * Author URI:  https://github.com/shahjalal132
  * Description: Automatically cleanup WooCommerce products with low/no stock and their images via REST API endpoints with comprehensive statistics tracking and manual deletion tools.
- * Version:     2.1.0
+ * Version:     2.1.1
  * Text Domain: wc-auto-stock-cleanup
  * Domain Path: /languages
  * Requires at least: 5.0
@@ -130,11 +130,50 @@ class WooCommerce_Auto_Stock_Cleanup {
      * Permission check for REST API
      */
     public function rest_permission_check() {
-        // Check for API key in header
+        // Get stored API key
         $api_key = get_option('delete_images_api_key', '');
-        $provided_key = isset($_SERVER['HTTP_X_API_KEY']) ? $_SERVER['HTTP_X_API_KEY'] : '';
         
-        return !empty($api_key) && $provided_key === $api_key;
+        if (empty($api_key)) {
+            return false;
+        }
+        
+        // Try multiple methods to get the API key from request
+        $provided_key = '';
+        
+        // Method 1: Check $_SERVER with different header formats
+        if (isset($_SERVER['HTTP_X_API_KEY'])) {
+            $provided_key = $_SERVER['HTTP_X_API_KEY'];
+        }
+        
+        // Method 2: Use getallheaders() if available
+        if (empty($provided_key) && function_exists('getallheaders')) {
+            $headers = getallheaders();
+            if (isset($headers['X-API-Key'])) {
+                $provided_key = $headers['X-API-Key'];
+            } elseif (isset($headers['X-Api-Key'])) {
+                $provided_key = $headers['X-Api-Key'];
+            } elseif (isset($headers['x-api-key'])) {
+                $provided_key = $headers['x-api-key'];
+            }
+        }
+        
+        // Method 3: Check Apache request headers
+        if (empty($provided_key) && function_exists('apache_request_headers')) {
+            $headers = apache_request_headers();
+            if (isset($headers['X-API-Key'])) {
+                $provided_key = $headers['X-API-Key'];
+            } elseif (isset($headers['X-Api-Key'])) {
+                $provided_key = $headers['X-Api-Key'];
+            } elseif (isset($headers['x-api-key'])) {
+                $provided_key = $headers['x-api-key'];
+            }
+        }
+        
+        // Trim any whitespace
+        $provided_key = trim($provided_key);
+        $api_key = trim($api_key);
+        
+        return !empty($provided_key) && $provided_key === $api_key;
     }
     
     /**
@@ -221,7 +260,7 @@ class WooCommerce_Auto_Stock_Cleanup {
                     <strong>WooCommerce Version:</strong> <?php echo defined('WC_VERSION') ? WC_VERSION : 'Not detected'; ?> |
                     <strong>HPOS Compatible:</strong> Yes |
                     <strong>Blocks Compatible:</strong> Yes |
-                    <strong>Plugin Version:</strong> 2.1.0
+                    <strong>Plugin Version:</strong> 2.1.1
                 </p>
             </div>
             
