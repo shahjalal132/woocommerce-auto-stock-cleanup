@@ -1,0 +1,19 @@
+#progress-wrapper {
+  width: 100%;
+  background: #f1f1f1;
+  border-radius: 5px;
+  overflow: hidden;
+  position: relative;
+}
+#progress-bar {
+  transition: width 0.3s ease;
+}
+#progress-text {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #000;
+  font-weight: bold;
+}
+
