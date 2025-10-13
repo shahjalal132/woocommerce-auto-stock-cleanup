@@ -1,15 +1,17 @@
 # WooCommerce Auto Stock Cleanup Plugin
 
-**Version:** 2.1.0  
+**Version:** 2.2.0  
 **Author:** Shah Jalal
 
 ## Description
 
 A high-performance WordPress plugin designed for WooCommerce stores that provides:
 1. **Manual Image Deletion**: Delete WordPress attachments by their IDs with AJAX and a progress bar
-2. **Intelligent Batch Processing**: Efficiently handle 1000s of products with automatic batch processing, timeout protection, and memory management
-3. **Automatic Product Cleanup via REST API**: Delete products with single quantity (stock = 1) for non-brazyliany categories and low stock (< 5) for brazyliany category using REST API endpoints with comprehensive statistics
-4. **Full WooCommerce Compatibility**: HPOS ready, Blocks compatible, and follows all WooCommerce standards
+2. **Asynchronous Job System**: Non-blocking API endpoints that return instantly with job IDs for background processing
+3. **Real-time Progress Tracking**: Monitor job status, progress percentage, and estimated completion time
+4. **Intelligent Batch Processing**: Efficiently handle 1000s of products with automatic batch processing, timeout protection, and memory management
+5. **Automatic Product Cleanup via REST API**: Delete products with single quantity (stock = 1) for non-brazyliany categories and low stock (< 5) for brazyliany category
+6. **Full WooCommerce Compatibility**: HPOS ready, Blocks compatible, and follows all WooCommerce standards
 
 ## Features
 
@@ -20,19 +22,28 @@ A high-performance WordPress plugin designed for WooCommerce stores that provide
 - **Standards Compliant**: Follows all WooCommerce coding standards and best practices
 - **No Compatibility Warnings**: Properly declares all feature compatibility
 
-### 2. Manual Image Deletion
+### 2. Asynchronous Job System 🚀 (NEW v2.2.0)
+- **Instant API Response**: Get job ID in ~100ms, no more waiting for long processes
+- **Background Processing**: Jobs run independently without blocking API calls
+- **Real-time Progress**: Monitor job status, percentage, and estimated time remaining
+- **Job Queue Management**: Track multiple jobs with detailed status and logs
+- **No Timeouts**: Eliminates "partial_timeout" issues from large datasets
+- **Server Friendly**: Non-blocking execution prevents server resource exhaustion
+
+### 3. Manual Image Deletion
 - Enter comma-separated attachment IDs
 - AJAX-powered deletion with real-time progress bar
 - Visual feedback for successful and failed deletions
 
-### 3. REST API Endpoints for Product Cleanup
+### 4. REST API Endpoints for Product Cleanup
 
-#### **Cleanup Endpoint** (POST)
-Triggers the product cleanup process and returns detailed statistics.
+#### **NEW: Async Cleanup Endpoint** (POST) - v2.2.0
+Creates a background cleanup job and returns instantly with job ID.
 
 **URL:** `https://your-site.com/wp-json/delete-images/v1/cleanup`  
 **Method:** POST  
 **Authentication:** API Key (X-API-Key header)  
+**Response Time:** ~100ms (instant)
 
 **Example cURL:**
 ```bash
@@ -40,23 +51,63 @@ curl -X POST "https://your-site.com/wp-json/delete-images/v1/cleanup" \
      -H "X-API-Key: YOUR_API_KEY"
 ```
 
-**Response:**
+**Instant Response (202 Accepted):**
 ```json
 {
   "success": true,
-  "data": {
-    "total_scanned": 3500,
-    "non_brazyliany_found": 2156,
-    "brazyliany_found": 45,
-    "products_deleted": 350,
-    "images_deleted": 1850,
-    "variations_deleted": 890,
-    "execution_time": "300.12 seconds",
-    "timestamp": "2025-10-13 10:30:45",
-    "batches_processed": 7,
-    "status": "partial_timeout"
+  "job_id": "cleanup_12345678-1234-1234-1234-123456789abc",
+  "status": "queued",
+  "message": "Cleanup job created successfully. Use the job ID to check progress.",
+  "endpoints": {
+    "status": "https://your-site.com/wp-json/delete-images/v1/job/cleanup_12345678-1234-1234-1234-123456789abc",
+    "all_jobs": "https://your-site.com/wp-json/delete-images/v1/jobs"
   }
 }
+```
+
+#### **Job Status Endpoint** (GET) - Monitor Progress
+Real-time job monitoring without authentication.
+
+**URL:** `https://your-site.com/wp-json/delete-images/v1/job/{job_id}`  
+**Method:** GET  
+**Authentication:** None required
+
+**Example cURL:**
+```bash
+curl "https://your-site.com/wp-json/delete-images/v1/job/cleanup_12345678-1234-1234-1234-123456789abc"
+```
+
+**Progress Response:**
+```json
+{
+  "success": true,
+  "job": {
+    "id": "cleanup_12345678-1234-1234-1234-123456789abc",
+    "status": "running",
+    "progress": {
+      "percentage": 45.2,
+      "current_batch": 18,
+      "total_batches": 40,
+      "products_deleted": 350,
+      "processing_stage": "deleting_non_brazyliany"
+    },
+    "runtime": "5 minutes",
+    "estimated_remaining": "6 minutes"
+  }
+}
+```
+
+#### **All Jobs Endpoint** (GET) - List Recent Jobs
+View all recent cleanup jobs and their status.
+
+**URL:** `https://your-site.com/wp-json/delete-images/v1/jobs`  
+**Method:** GET  
+**Authentication:** API Key required
+
+**Example cURL:**
+```bash
+curl "https://your-site.com/wp-json/delete-images/v1/jobs" \
+     -H "X-API-Key: YOUR_API_KEY"
 ```
 
 #### **Stats Endpoint** (GET)
@@ -313,6 +364,16 @@ Using manual cron jobs via REST API instead of WordPress's built-in cron system 
 For issues or feature requests, contact Shah Jalal.
 
 ## Changelog
+
+### Version 2.2.0
+- **MAJOR**: Asynchronous Job System - Non-blocking API endpoints with instant responses
+- **Job Queue Management**: Real-time progress tracking with job IDs
+- **Enhanced Monitoring**: Live progress percentage, batch tracking, and time estimates
+- **Background Processing**: Jobs run independently without blocking server resources
+- **No More Timeouts**: Eliminates "partial_timeout" issues for large datasets
+- **New Endpoints**: Job status, job listing, and enhanced monitoring
+- **Server Performance**: Improved resource utilization and memory management
+- **Enhanced Logging**: Detailed job logs with timestamp and progress tracking
 
 ### Version 2.1.0
 - **WooCommerce Compatibility**: Full HPOS and WooCommerce Blocks compatibility

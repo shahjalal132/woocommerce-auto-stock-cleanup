@@ -5,7 +5,7 @@
  * Author:      Shah Jalal
  * Author URI:  https://github.com/shahjalal132
  * Description: Automatically cleanup WooCommerce products with low/no stock and their images via REST API endpoints with comprehensive statistics tracking and manual deletion tools.
- * Version:     2.1.0
+ * Version:     2.2.0
  * Text Domain: wc-auto-stock-cleanup
  * Domain Path: /languages
  * Requires at least: 5.0
@@ -50,6 +50,9 @@ class WooCommerce_Auto_Stock_Cleanup {
         // WooCommerce compatibility
         add_action('before_woocommerce_init', [$this, 'declare_compatibility']);
         add_action('init', [$this, 'init_plugin']);
+        
+        // Background job processing
+        add_action('wc_auto_stock_cleanup_process_job', [$this, 'process_job']);
     }
     
     /**
@@ -111,18 +114,53 @@ class WooCommerce_Auto_Stock_Cleanup {
      * Register REST API routes
      */
     public function register_rest_routes() {
-        // Cleanup endpoint
+        // Cleanup endpoint - now creates background job
         register_rest_route('delete-images/v1', '/cleanup', [
             'methods' => 'POST',
-            'callback' => [$this, 'rest_run_cleanup'],
+            'callback' => [$this, 'rest_create_cleanup_job'],
             'permission_callback' => [$this, 'rest_permission_check']
         ]);
         
-        // Stats endpoint
+        // Job status endpoint
+        register_rest_route('delete-images/v1', '/job/(?P<job_id>[a-zA-Z0-9-]+)', [
+            'methods' => 'GET',
+            'callback' => [$this, 'rest_get_job_status'],
+            'permission_callback' => '__return_true',
+            'args' => [
+                'job_id' => [
+                    'validate_callback' => function($param) {
+                        return !empty($param) && preg_match('/^[a-zA-Z0-9-]+$/', $param);
+                    }
+                ]
+            ]
+        ]);
+        
+        // List all jobs endpoint
+        register_rest_route('delete-images/v1', '/jobs', [
+            'methods' => 'GET',
+            'callback' => [$this, 'rest_get_all_jobs'],
+            'permission_callback' => [$this, 'rest_permission_check']
+        ]);
+        
+        // Stats endpoint (legacy compatibility)
         register_rest_route('delete-images/v1', '/stats', [
             'methods' => 'GET',
             'callback' => [$this, 'rest_get_stats'],
             'permission_callback' => '__return_true' // Public endpoint
+        ]);
+        
+        // Internal job processor endpoint (for background processing)
+        register_rest_route('delete-images/v1', '/process-job/(?P<job_id>[a-zA-Z0-9-]+)', [
+            'methods' => 'POST',
+            'callback' => [$this, 'rest_process_job'],
+            'permission_callback' => [$this, 'rest_internal_permission_check'],
+            'args' => [
+                'job_id' => [
+                    'validate_callback' => function($param) {
+                        return !empty($param) && preg_match('/^[a-zA-Z0-9-]+$/', $param);
+                    }
+                ]
+            ]
         ]);
     }
     
@@ -138,19 +176,95 @@ class WooCommerce_Auto_Stock_Cleanup {
     }
     
     /**
-     * REST API cleanup endpoint
+     * Internal permission check for job processing
      */
-    public function rest_run_cleanup($request) {
-        $result = $this->run_daily_cleanup();
+    public function rest_internal_permission_check() {
+        // Allow internal job processing or API key access
+        $api_key = get_option('delete_images_api_key', '');
+        $provided_key = isset($_SERVER['HTTP_X_API_KEY']) ? $_SERVER['HTTP_X_API_KEY'] : '';
+        
+        // Allow internal calls or valid API key
+        return (!empty($api_key) && $provided_key === $api_key) || 
+               (defined('WP_CLI') && WP_CLI) || 
+               wp_doing_cron();
+    }
+    
+    /**
+     * REST API - Create cleanup job (returns immediately)
+     */
+    public function rest_create_cleanup_job($request) {
+        $job_id = $this->create_cleanup_job();
+        
+        if ($job_id) {
+            // Trigger background processing
+            $this->trigger_background_processing($job_id);
+            
+            return new WP_REST_Response([
+                'success' => true,
+                'job_id' => $job_id,
+                'status' => 'queued',
+                'message' => 'Cleanup job created successfully. Use the job ID to check progress.',
+                'endpoints' => [
+                    'status' => get_rest_url(null, "delete-images/v1/job/$job_id"),
+                    'all_jobs' => get_rest_url(null, 'delete-images/v1/jobs')
+                ]
+            ], 202); // 202 Accepted
+        } else {
+            return new WP_REST_Response([
+                'success' => false,
+                'error' => 'Failed to create cleanup job'
+            ], 500);
+        }
+    }
+    
+    /**
+     * REST API - Get job status
+     */
+    public function rest_get_job_status($request) {
+        $job_id = $request['job_id'];
+        $job = $this->get_job_status($job_id);
+        
+        if ($job) {
+            return new WP_REST_Response([
+                'success' => true,
+                'job' => $job
+            ], 200);
+        } else {
+            return new WP_REST_Response([
+                'success' => false,
+                'error' => 'Job not found'
+            ], 404);
+        }
+    }
+    
+    /**
+     * REST API - Get all jobs
+     */
+    public function rest_get_all_jobs($request) {
+        $jobs = $this->get_all_jobs();
         
         return new WP_REST_Response([
             'success' => true,
-            'data' => $result
+            'jobs' => $jobs,
+            'total' => count($jobs)
         ], 200);
     }
     
     /**
-     * REST API stats endpoint
+     * REST API - Process job (internal endpoint)
+     */
+    public function rest_process_job($request) {
+        $job_id = $request['job_id'];
+        $result = $this->process_job($job_id);
+        
+        return new WP_REST_Response([
+            'success' => true,
+            'result' => $result
+        ], 200);
+    }
+    
+    /**
+     * REST API stats endpoint (legacy compatibility)
      */
     public function rest_get_stats($request) {
         $stats = get_option('delete_images_cleanup_stats', []);
@@ -221,7 +335,7 @@ class WooCommerce_Auto_Stock_Cleanup {
                     <strong>WooCommerce Version:</strong> <?php echo defined('WC_VERSION') ? WC_VERSION : 'Not detected'; ?> |
                     <strong>HPOS Compatible:</strong> Yes |
                     <strong>Blocks Compatible:</strong> Yes |
-                    <strong>Plugin Version:</strong> 2.1.0
+                    <strong>Plugin Version:</strong> 2.2.0
                 </p>
             </div>
             
@@ -381,6 +495,255 @@ class WooCommerce_Auto_Stock_Cleanup {
     }
     
     /**
+     * =================
+     * JOB MANAGEMENT SYSTEM
+     * =================
+     */
+    
+    /**
+     * Create a new cleanup job
+     */
+    private function create_cleanup_job() {
+        $job_id = 'cleanup_' . wp_generate_uuid4();
+        
+        $job_data = [
+            'id' => $job_id,
+            'status' => 'queued', // queued, running, completed, failed, cancelled
+            'created_at' => current_time('mysql'),
+            'started_at' => null,
+            'completed_at' => null,
+            'progress' => [
+                'current_batch' => 0,
+                'total_batches' => 0,
+                'products_processed' => 0,
+                'products_deleted' => 0,
+                'images_deleted' => 0,
+                'variations_deleted' => 0,
+                'processing_stage' => 'initializing' // initializing, scanning, deleting_non_brazyliany, deleting_brazyliany, completed
+            ],
+            'stats' => [
+                'total_scanned' => 0,
+                'non_brazyliany_found' => 0,
+                'brazyliany_found' => 0,
+                'products_deleted' => 0,
+                'images_deleted' => 0,
+                'variations_deleted' => 0,
+                'execution_time' => '',
+                'timestamp' => current_time('mysql'),
+                'batches_processed' => 0,
+                'status' => 'queued'
+            ],
+            'error' => null,
+            'logs' => []
+        ];
+        
+        // Store job data
+        $jobs = get_option('delete_images_jobs', []);
+        $jobs[$job_id] = $job_data;
+        update_option('delete_images_jobs', $jobs);
+        
+        $this->log_job($job_id, 'Job created and queued for processing');
+        
+        return $job_id;
+    }
+    
+    /**
+     * Get job status by ID
+     */
+    private function get_job_status($job_id) {
+        $jobs = get_option('delete_images_jobs', []);
+        
+        if (isset($jobs[$job_id])) {
+            $job = $jobs[$job_id];
+            
+            // Calculate percentage
+            if ($job['progress']['total_batches'] > 0) {
+                $job['progress']['percentage'] = round(
+                    ($job['progress']['current_batch'] / $job['progress']['total_batches']) * 100, 
+                    2
+                );
+            } else {
+                $job['progress']['percentage'] = 0;
+            }
+            
+            // Add time estimates
+            if ($job['status'] === 'running' && $job['started_at']) {
+                $elapsed = time() - strtotime($job['started_at']);
+                $job['runtime'] = $this->format_duration($elapsed);
+                
+                if ($job['progress']['percentage'] > 0) {
+                    $estimated_total = ($elapsed / $job['progress']['percentage']) * 100;
+                    $estimated_remaining = $estimated_total - $elapsed;
+                    $job['estimated_remaining'] = $this->format_duration($estimated_remaining);
+                }
+            }
+            
+            return $job;
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Get all jobs
+     */
+    private function get_all_jobs($limit = 20) {
+        $jobs = get_option('delete_images_jobs', []);
+        
+        // Sort by created_at descending
+        uasort($jobs, function($a, $b) {
+            return strtotime($b['created_at']) - strtotime($a['created_at']);
+        });
+        
+        // Limit results
+        $jobs = array_slice($jobs, 0, $limit, true);
+        
+        // Add progress percentages
+        foreach ($jobs as $job_id => &$job) {
+            if ($job['progress']['total_batches'] > 0) {
+                $job['progress']['percentage'] = round(
+                    ($job['progress']['current_batch'] / $job['progress']['total_batches']) * 100, 
+                    2
+                );
+            } else {
+                $job['progress']['percentage'] = 0;
+            }
+        }
+        
+        return $jobs;
+    }
+    
+    /**
+     * Update job status and progress
+     */
+    private function update_job($job_id, $updates) {
+        $jobs = get_option('delete_images_jobs', []);
+        
+        if (isset($jobs[$job_id])) {
+            $jobs[$job_id] = array_merge_recursive($jobs[$job_id], $updates);
+            update_option('delete_images_jobs', $jobs);
+            return true;
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Log job message
+     */
+    private function log_job($job_id, $message, $level = 'info') {
+        $jobs = get_option('delete_images_jobs', []);
+        
+        if (isset($jobs[$job_id])) {
+            $jobs[$job_id]['logs'][] = [
+                'timestamp' => current_time('mysql'),
+                'level' => $level,
+                'message' => $message
+            ];
+            
+            // Keep only last 50 log entries
+            if (count($jobs[$job_id]['logs']) > 50) {
+                $jobs[$job_id]['logs'] = array_slice($jobs[$job_id]['logs'], -50);
+            }
+            
+            update_option('delete_images_jobs', $jobs);
+            
+            // Also log to main log file
+            $this->log_message("Job $job_id: $message");
+        }
+    }
+    
+    /**
+     * Trigger background processing
+     */
+    private function trigger_background_processing($job_id) {
+        // Method 1: WordPress HTTP API (non-blocking)
+        $url = get_rest_url(null, "delete-images/v1/process-job/$job_id");
+        $api_key = get_option('delete_images_api_key', '');
+        
+        $args = [
+            'timeout' => 0.01, // Very short timeout to make it non-blocking
+            'blocking' => false, // Non-blocking request
+            'headers' => [
+                'X-API-Key' => $api_key,
+                'Content-Type' => 'application/json'
+            ],
+            'sslverify' => false // For development/local environments
+        ];
+        
+        wp_remote_post($url, $args);
+        
+        // Method 2: Fallback with wp_cron (delayed execution)
+        if (!wp_next_scheduled('wc_auto_stock_cleanup_process_job', [$job_id])) {
+            wp_schedule_single_event(time() + 5, 'wc_auto_stock_cleanup_process_job', [$job_id]);
+        }
+        
+        $this->log_job($job_id, 'Background processing triggered');
+    }
+    
+    /**
+     * Process job (main background worker)
+     */
+    public function process_job($job_id) {
+        $this->log_job($job_id, 'Starting job processing');
+        
+        // Update job status to running
+        $this->update_job($job_id, [
+            'status' => 'running',
+            'started_at' => current_time('mysql'),
+            'progress' => ['processing_stage' => 'scanning']
+        ]);
+        
+        try {
+            // Run the actual cleanup with job tracking
+            $result = $this->run_cleanup_with_job_tracking($job_id);
+            
+            // Update job as completed
+            $this->update_job($job_id, [
+                'status' => 'completed',
+                'completed_at' => current_time('mysql'),
+                'stats' => $result,
+                'progress' => ['processing_stage' => 'completed']
+            ]);
+            
+            $this->log_job($job_id, 'Job completed successfully');
+            
+            return $result;
+            
+        } catch (Exception $e) {
+            // Handle job failure
+            $this->update_job($job_id, [
+                'status' => 'failed',
+                'completed_at' => current_time('mysql'),
+                'error' => $e->getMessage()
+            ]);
+            
+            $this->log_job($job_id, 'Job failed: ' . $e->getMessage(), 'error');
+            
+            throw $e;
+        }
+    }
+    
+    /**
+     * Format duration in human readable format
+     */
+    private function format_duration($seconds) {
+        if ($seconds < 60) {
+            return round($seconds) . ' seconds';
+        } elseif ($seconds < 3600) {
+            return round($seconds / 60) . ' minutes';
+        } else {
+            return round($seconds / 3600, 1) . ' hours';
+        }
+    }
+    
+    /**
+     * =================
+     * CLEANUP PROCESSING
+     * =================
+     */
+    
+    /**
      * Run daily cleanup - main cron job function with batch processing
      */
     public function run_daily_cleanup() {
@@ -458,6 +821,205 @@ class WooCommerce_Auto_Stock_Cleanup {
         $this->log_message("Cleanup completed. Total time: {$stats['execution_time']}");
         
         return $stats;
+    }
+    
+    /**
+     * Run cleanup with job tracking (for background jobs)
+     */
+    private function run_cleanup_with_job_tracking($job_id) {
+        $start_time = microtime(true);
+        $batch_size = 50; // Process 50 products at a time
+        $max_execution_time = 300; // 5 minutes max
+        
+        // Set time limit and increase memory if possible
+        @set_time_limit($max_execution_time);
+        @ini_set('memory_limit', '512M');
+        
+        // Initialize stats
+        $stats = [
+            'total_scanned' => 0,
+            'non_brazyliany_found' => 0,
+            'brazyliany_found' => 0,
+            'products_deleted' => 0,
+            'images_deleted' => 0,
+            'variations_deleted' => 0,
+            'execution_time' => '',
+            'timestamp' => current_time('mysql'),
+            'batches_processed' => 0,
+            'status' => 'completed'
+        ];
+        
+        // Update job with scanning stage
+        $this->update_job($job_id, [
+            'progress' => ['processing_stage' => 'scanning']
+        ]);
+        $this->log_job($job_id, 'Starting product scanning...');
+        
+        // Get total products count for scanning
+        global $wpdb;
+        $total_products = $wpdb->get_var("
+            SELECT COUNT(DISTINCT p.ID)
+            FROM {$wpdb->prefix}posts AS p
+            INNER JOIN {$wpdb->prefix}term_relationships AS tr ON p.ID = tr.object_id
+            INNER JOIN {$wpdb->prefix}term_taxonomy AS tt ON tr.term_taxonomy_id = tt.term_taxonomy_id
+            WHERE p.post_type = 'product'
+            AND p.post_status = 'publish'
+            AND tt.taxonomy = 'product_cat'
+        ");
+        $stats['total_scanned'] = (int)$total_products;
+        
+        // Count products that match deletion criteria
+        $stats['non_brazyliany_found'] = $this->count_non_brazyliany_products();
+        $stats['brazyliany_found'] = $this->count_brazyliany_products();
+        
+        $total_to_delete = $stats['non_brazyliany_found'] + $stats['brazyliany_found'];
+        $total_batches = ceil($total_to_delete / $batch_size);
+        
+        // Update job with batch info
+        $this->update_job($job_id, [
+            'progress' => [
+                'total_batches' => $total_batches,
+                'processing_stage' => 'deleting_non_brazyliany'
+            ],
+            'stats' => $stats
+        ]);
+        
+        $this->log_job($job_id, "Found {$stats['non_brazyliany_found']} non-brazyliany and {$stats['brazyliany_found']} brazyliany products to delete");
+        
+        // Process products in batches if any found
+        if ($total_to_delete > 0) {
+            $this->log_job($job_id, "Starting batch deletion of $total_to_delete products in $total_batches batches");
+            
+            // Process non-brazyliany products in batches
+            $this->process_non_brazyliany_batches_with_job_tracking($job_id, $batch_size, $max_execution_time, $start_time, $stats);
+            
+            // Check if we still have time for brazyliany products
+            if ((microtime(true) - $start_time) < ($max_execution_time - 30)) {
+                $this->update_job($job_id, [
+                    'progress' => ['processing_stage' => 'deleting_brazyliany']
+                ]);
+                
+                $this->process_brazyliany_batches_with_job_tracking($job_id, $batch_size, $max_execution_time, $start_time, $stats);
+            } else {
+                $stats['status'] = 'partial_timeout';
+                $this->log_job($job_id, "Timeout reached, brazyliany products will be processed in next run", 'warning');
+            }
+            
+            // Log the cleanup
+            $this->log_cleanup($stats, []);
+        } else {
+            $this->log_job($job_id, "No products found matching deletion criteria");
+            // Still save stats even if nothing was deleted
+            update_option('delete_images_cleanup_stats', $stats);
+        }
+        
+        // Calculate execution time
+        $end_time = microtime(true);
+        $execution_time = round($end_time - $start_time, 2);
+        $stats['execution_time'] = $execution_time . ' seconds';
+        
+        // Update stats with execution time
+        update_option('delete_images_cleanup_stats', $stats);
+        
+        $this->log_job($job_id, "Cleanup completed. Total time: {$stats['execution_time']}. Products deleted: {$stats['products_deleted']}");
+        
+        return $stats;
+    }
+    
+    /**
+     * Process non-brazyliany products in batches with job tracking
+     */
+    private function process_non_brazyliany_batches_with_job_tracking($job_id, $batch_size, $max_execution_time, $start_time, &$stats) {
+        $offset = 0;
+        $batch_count = 0;
+        
+        while ((microtime(true) - $start_time) < ($max_execution_time - 60)) { // Leave 60s buffer
+            $products = $this->get_non_brazyliany_products($batch_size, $offset);
+            
+            if (empty($products)) {
+                break; // No more products to process
+            }
+            
+            $batch_count++;
+            $current_batch = $stats['batches_processed'] + $batch_count;
+            
+            $this->log_job($job_id, "Processing non-brazyliany batch $batch_count (" . count($products) . " products)");
+            
+            // Update job progress
+            $this->update_job($job_id, [
+                'progress' => [
+                    'current_batch' => $current_batch,
+                    'products_processed' => $stats['products_deleted'] + ($batch_count * $batch_size)
+                ]
+            ]);
+            
+            $deletion_stats = $this->delete_products_and_attachments($products);
+            $stats['products_deleted'] += $deletion_stats['products_deleted'];
+            $stats['images_deleted'] += $deletion_stats['images_deleted'];
+            $stats['variations_deleted'] += $deletion_stats['variations_deleted'];
+            $stats['batches_processed']++;
+            
+            $offset += $batch_size;
+            
+            // Memory cleanup
+            unset($products);
+            if (function_exists('gc_collect_cycles')) {
+                gc_collect_cycles();
+            }
+            
+            // Small delay to prevent overwhelming the server
+            usleep(100000); // 0.1 second
+        }
+        
+        $this->log_job($job_id, "Processed $batch_count non-brazyliany batches");
+    }
+    
+    /**
+     * Process brazyliany products in batches with job tracking
+     */
+    private function process_brazyliany_batches_with_job_tracking($job_id, $batch_size, $max_execution_time, $start_time, &$stats) {
+        $offset = 0;
+        $batch_count = 0;
+        
+        while ((microtime(true) - $start_time) < ($max_execution_time - 30)) { // Leave 30s buffer
+            $products = $this->get_brazyliany_products($batch_size, $offset);
+            
+            if (empty($products)) {
+                break; // No more products to process
+            }
+            
+            $batch_count++;
+            $current_batch = $stats['batches_processed'] + $batch_count;
+            
+            $this->log_job($job_id, "Processing brazyliany batch $batch_count (" . count($products) . " products)");
+            
+            // Update job progress
+            $this->update_job($job_id, [
+                'progress' => [
+                    'current_batch' => $current_batch,
+                    'products_processed' => $stats['products_deleted'] + ($batch_count * $batch_size)
+                ]
+            ]);
+            
+            $deletion_stats = $this->delete_products_and_attachments($products);
+            $stats['products_deleted'] += $deletion_stats['products_deleted'];
+            $stats['images_deleted'] += $deletion_stats['images_deleted'];
+            $stats['variations_deleted'] += $deletion_stats['variations_deleted'];
+            $stats['batches_processed']++;
+            
+            $offset += $batch_size;
+            
+            // Memory cleanup
+            unset($products);
+            if (function_exists('gc_collect_cycles')) {
+                gc_collect_cycles();
+            }
+            
+            // Small delay to prevent overwhelming the server
+            usleep(100000); // 0.1 second
+        }
+        
+        $this->log_job($job_id, "Processed $batch_count brazyliany batches");
     }
     
     /**
