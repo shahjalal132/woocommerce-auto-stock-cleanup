@@ -1547,5 +1547,8 @@ class WooCommerce_Auto_Stock_Cleanup {
 register_activation_hook( __FILE__, [ 'WooCommerce_Auto_Stock_Cleanup', 'activate' ] );
 register_deactivation_hook( __FILE__, [ 'WooCommerce_Auto_Stock_Cleanup', 'deactivate' ] );
 
+// include scheduler.php
+require_once( __DIR__ . '/includes/scheduler.php' );
+
 // Initialize the plugin
 new WooCommerce_Auto_Stock_Cleanup();
