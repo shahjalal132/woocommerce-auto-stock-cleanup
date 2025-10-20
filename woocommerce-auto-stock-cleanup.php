@@ -1549,6 +1549,9 @@ register_deactivation_hook( __FILE__, [ 'WooCommerce_Auto_Stock_Cleanup', 'deact
 
 // include scheduler.php
 require_once( __DIR__ . '/includes/scheduler.php' );
+// include delete-duplicate-images.php
+require_once( __DIR__ . '/includes/delete-duplicate-images.php' );
+
 
 // Initialize the plugin
 new WooCommerce_Auto_Stock_Cleanup();
