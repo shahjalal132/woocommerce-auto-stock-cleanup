@@ -25,7 +25,7 @@ class Delete_Duplicate_Unattached_Images {
     public function scan_and_delete(WP_REST_Request $request) {
         global $wpdb;
 
-        $limit   = intval($request->get_param('limit')) ?: 50;
+        $limit   = intval($request->get_param('limit')) ?: 200; // Increased default limit
         $last_id = intval(get_option('media_cleaner_last_id', 0));
 
         // Fetch all images after last scanned ID
@@ -52,6 +52,10 @@ class Delete_Duplicate_Unattached_Images {
             ]);
         }
 
+        // Build lookup tables for fast reference checking (BULK LOAD)
+        $attachment_ids = array_column($attachments, 'ID');
+        $reference_cache = $this->build_reference_cache($attachment_ids);
+
         $scanned            = 0;
         $unreferencedFound  = 0;
         $deletedIds         = [];
@@ -61,8 +65,8 @@ class Delete_Duplicate_Unattached_Images {
             $scanned++;
             $last_id = $attachment->ID;
 
-            // Check if image has any references
-            $has_reference = $this->has_any_reference($attachment->ID, $attachment->post_parent);
+            // Check if image has any references using cached data
+            $has_reference = $this->has_any_reference_fast($attachment->ID, $attachment->post_parent, $reference_cache);
 
             if (!$has_reference) {
                 // No reference found, delete the image
@@ -89,77 +93,113 @@ class Delete_Duplicate_Unattached_Images {
     }
 
     /**
-     * Check if an image has any references in posts, products, or designs
+     * Build reference cache for batch of attachments (FAST BULK LOADING)
      * 
-     * @param int $attachment_id The attachment ID to check
-     * @param int $post_parent The post parent ID from the attachment
-     * @return bool True if the image has references, false otherwise
+     * @param array $attachment_ids Array of attachment IDs to check
+     * @return array Cache of all references
      */
-    private function has_any_reference($attachment_id, $post_parent) {
+    private function build_reference_cache($attachment_ids) {
         global $wpdb;
+        
+        $cache = [
+            'valid_parents' => [],
+            'thumbnails' => [],
+            'galleries' => [],
+            'content_refs' => [],
+            'meta_refs' => [],
+        ];
 
-        // 1. Check if it has a post parent (attached to a post/product)
-        if ($post_parent > 0) {
-            // Verify the parent post actually exists
-            $parent_exists = $wpdb->get_var($wpdb->prepare("
-                SELECT ID FROM {$wpdb->posts}
-                WHERE ID = %d
-                AND post_status != 'trash'
-                LIMIT 1
-            ", $post_parent));
-            
-            if ($parent_exists) {
-                return true;
-            }
+        if (empty($attachment_ids)) {
+            return $cache;
         }
 
-        // 2. Check if it's used as a featured image (thumbnail) for any post/product
-        $used_as_thumbnail = $wpdb->get_var($wpdb->prepare("
-            SELECT post_id FROM {$wpdb->postmeta}
+        $ids_placeholder = implode(',', array_fill(0, count($attachment_ids), '%d'));
+
+        // 1. Get all valid parent posts in one query
+        $parent_ids = array_unique(array_filter(array_column($wpdb->get_results($wpdb->prepare("
+            SELECT DISTINCT post_parent 
+            FROM {$wpdb->posts}
+            WHERE ID IN ($ids_placeholder)
+            AND post_parent > 0
+        ", ...$attachment_ids)), 'post_parent')));
+
+        if (!empty($parent_ids)) {
+            $parent_placeholder = implode(',', array_fill(0, count($parent_ids), '%d'));
+            $valid_parents = $wpdb->get_col($wpdb->prepare("
+                SELECT ID FROM {$wpdb->posts}
+                WHERE ID IN ($parent_placeholder)
+                AND post_status != 'trash'
+            ", ...$parent_ids));
+            $cache['valid_parents'] = array_flip($valid_parents);
+        }
+
+        // 2. Get all thumbnail references in one query
+        $thumbnails = $wpdb->get_results($wpdb->prepare("
+            SELECT meta_value FROM {$wpdb->postmeta}
             WHERE meta_key = '_thumbnail_id'
-            AND meta_value = %d
-            LIMIT 1
-        ", $attachment_id));
-
-        if ($used_as_thumbnail) {
-            return true;
+            AND meta_value IN ($ids_placeholder)
+        ", ...$attachment_ids));
+        
+        foreach ($thumbnails as $thumb) {
+            $cache['thumbnails'][$thumb->meta_value] = true;
         }
 
-        // 3. Check if it's in any WooCommerce product gallery
-        $in_product_gallery = $wpdb->get_results($wpdb->prepare("
-            SELECT post_id, meta_value FROM {$wpdb->postmeta}
+        // 3. Get all product galleries in one query
+        $galleries = $wpdb->get_results("
+            SELECT meta_value FROM {$wpdb->postmeta}
             WHERE meta_key = '_product_image_gallery'
-            AND meta_value LIKE %s
-        ", '%' . $wpdb->esc_like($attachment_id) . '%'));
+            AND meta_value != ''
+        ", ARRAY_A);
 
-        foreach ($in_product_gallery as $gallery) {
-            $gallery_ids = array_filter(array_map('intval', explode(',', $gallery->meta_value)));
-            if (in_array($attachment_id, $gallery_ids)) {
-                return true;
+        foreach ($galleries as $gallery) {
+            $gallery_ids = array_filter(array_map('intval', explode(',', $gallery['meta_value'])));
+            foreach ($gallery_ids as $gid) {
+                $cache['galleries'][$gid] = true;
             }
         }
 
-        // 4. Check if it's referenced in post content
-        $attachment_url = wp_get_attachment_url($attachment_id);
-        if ($attachment_url) {
-            // Extract filename from URL for more flexible matching
-            $filename = basename($attachment_url);
+        // 4. Get attachment URLs for content checking (batch)
+        $attachment_data = $wpdb->get_results($wpdb->prepare("
+            SELECT p.ID, pm.meta_value as file_path
+            FROM {$wpdb->posts} p
+            LEFT JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id AND pm.meta_key = '_wp_attached_file'
+            WHERE p.ID IN ($ids_placeholder)
+        ", ...$attachment_ids), OBJECT_K);
+
+        $filenames = [];
+        foreach ($attachment_data as $id => $data) {
+            if ($data->file_path) {
+                $filename = basename($data->file_path);
+                $filenames[$id] = $filename;
+            }
+        }
+
+        // Check content references for all filenames at once
+        if (!empty($filenames)) {
+            $filename_conditions = [];
+            $filename_params = [];
+            foreach ($filenames as $id => $filename) {
+                $filename_conditions[] = "post_content LIKE %s";
+                $filename_params[] = '%' . $wpdb->esc_like($filename) . '%';
+            }
             
-            $in_content = $wpdb->get_var($wpdb->prepare("
-                SELECT ID FROM {$wpdb->posts}
-                WHERE post_content LIKE %s
+            $content_query = "
+                SELECT DISTINCT ID FROM {$wpdb->posts}
+                WHERE (" . implode(' OR ', $filename_conditions) . ")
                 AND post_status != 'trash'
-                LIMIT 1
-            ", '%' . $wpdb->esc_like($filename) . '%'));
-
-            if ($in_content) {
-                return true;
+                LIMIT 1000
+            ";
+            
+            $has_content = $wpdb->get_var($wpdb->prepare($content_query, ...$filename_params));
+            
+            if ($has_content) {
+                // If any content reference found, need to check individually later
+                $cache['content_refs'] = $filenames;
             }
         }
 
-        // 5. Check if it's referenced in any other postmeta fields
-        // Common meta keys that might store image IDs
-        $common_meta_keys = [
+        // 5. Get all meta references in one query
+        $meta_keys = [
             '_product_image',
             'background_image',
             'header_image',
@@ -168,26 +208,68 @@ class Delete_Duplicate_Unattached_Images {
             'featured_image',
         ];
 
-        foreach ($common_meta_keys as $meta_key) {
-            $in_meta = $wpdb->get_var($wpdb->prepare("
-                SELECT post_id FROM {$wpdb->postmeta}
-                WHERE meta_key = %s
-                AND meta_value = %d
-                LIMIT 1
-            ", $meta_key, $attachment_id));
+        $meta_conditions = [];
+        $meta_params = [];
+        foreach ($meta_keys as $key) {
+            $meta_conditions[] = "meta_key = %s";
+            $meta_params[] = $key;
+        }
 
-            if ($in_meta) {
+        $meta_refs = $wpdb->get_results($wpdb->prepare("
+            SELECT meta_value FROM {$wpdb->postmeta}
+            WHERE (" . implode(' OR ', $meta_conditions) . ")
+            AND meta_value IN ($ids_placeholder)
+        ", array_merge($meta_params, $attachment_ids)));
+
+        foreach ($meta_refs as $ref) {
+            $cache['meta_refs'][$ref->meta_value] = true;
+        }
+
+        return $cache;
+    }
+
+    /**
+     * Fast reference check using pre-built cache
+     * 
+     * @param int $attachment_id The attachment ID to check
+     * @param int $post_parent The post parent ID from the attachment
+     * @param array $cache Pre-built reference cache
+     * @return bool True if the image has references, false otherwise
+     */
+    private function has_any_reference_fast($attachment_id, $post_parent, $cache) {
+        // 1. Check valid parent
+        if ($post_parent > 0 && isset($cache['valid_parents'][$post_parent])) {
+            return true;
+        }
+
+        // 2. Check thumbnails
+        if (isset($cache['thumbnails'][$attachment_id])) {
+            return true;
+        }
+
+        // 3. Check galleries
+        if (isset($cache['galleries'][$attachment_id])) {
+            return true;
+        }
+
+        // 4. Check content references
+        if (isset($cache['content_refs'][$attachment_id])) {
+            global $wpdb;
+            $filename = $cache['content_refs'][$attachment_id];
+            $in_content = $wpdb->get_var($wpdb->prepare("
+                SELECT ID FROM {$wpdb->posts}
+                WHERE post_content LIKE %s
+                AND post_status != 'trash'
+                LIMIT 1
+            ", '%' . $wpdb->esc_like($filename) . '%'));
+            
+            if ($in_content) {
                 return true;
             }
         }
 
-        // 6. Check ACF and other serialized meta fields
-        $serialized_meta = $wpdb->get_results($wpdb->prepare("
-            SELECT meta_value FROM {$wpdb->postmeta}
-            WHERE meta_value LIKE %s
-        ", '%' . $wpdb->esc_like('i:' . $attachment_id . ';') . '%'));
-
-        if (!empty($serialized_meta)) {
+        // 5. Check meta references
+        if (isset($cache['meta_refs'][$attachment_id])) {
             return true;
         }
 
