@@ -663,6 +663,64 @@ class WooCommerce_Auto_Stock_Cleanup {
                 </div>
             </div>
 
+            <!-- Category-Based Deletion Section -->
+            <div style="background: #fff; padding: 20px; border: 1px solid #ccc; margin-bottom: 30px;">
+                <h2>Category-Based Product Deletion</h2>
+                
+                <div
+                    style="background: #d1f2eb; padding: 15px; border: 1px solid #1abc9c; border-radius: 4px; margin-bottom: 20px;">
+                    <h4 style="margin: 0 0 10px 0; color: #0e6655;">🎯 Delete Products by Category</h4>
+                    <p style="margin: 0; color: #0e6655;">
+                        <strong>Target specific categories</strong> for bulk deletion. Get product lists first, then delete them with image tracking.
+                    </p>
+                </div>
+
+                <div style="margin-bottom: 20px;">
+                    <h3>1. Get Products by Category (GET)</h3>
+                    <code
+                        style="display: block; background: #e7f3ff; padding: 10px; border-radius: 4px; border-left: 4px solid #0073aa;">
+                                        <?php echo esc_html( $site_url ); ?>/wp-json/delete-images/v1/cat-products
+                                    </code>
+                    <p><strong>Method:</strong> GET</p>
+                    <p><strong>Authentication:</strong> None</p>
+                    <p><strong>Parameters:</strong></p>
+                    <ul>
+                        <li><code>cat</code> (required) - Category slug (e.g., 'biustonosze', 'brazyliany')</li>
+                        <li><code>limit</code> (optional, default 100, max 1000) - Number of products to fetch</li>
+                    </ul>
+                    <p><strong>Examples:</strong></p>
+                    <pre style="background: #282c34; color: #abb2bf; padding: 15px; border-radius: 4px; overflow-x: auto;"># Get 50 products from biustonosze category
+curl "<?php echo esc_html( $site_url ); ?>/wp-json/delete-images/v1/cat-products?cat=biustonosze&limit=50"
+
+# Get 100 products from brazyliany category
+curl "<?php echo esc_html( $site_url ); ?>/wp-json/delete-images/v1/cat-products?cat=brazyliany&limit=100"</pre>
+                </div>
+
+                <div style="margin-bottom: 20px;">
+                    <h3>2. Delete Products by Category (POST)</h3>
+                    <code
+                        style="display: block; background: #ffe6e6; padding: 10px; border-radius: 4px; border-left: 4px solid #d63638;">
+                                        <?php echo esc_html( $site_url ); ?>/wp-json/delete-images/v1/delete-cat-products
+                                    </code>
+                    <p><strong>Method:</strong> POST</p>
+                    <p><strong>Header:</strong> <code>X-API-Key: YOUR_API_KEY</code></p>
+                    <p><strong>Parameters:</strong></p>
+                    <ul>
+                        <li><code>cat</code> (required) - Category slug to delete products from</li>
+                        <li><code>limit</code> (optional, default 100, max 1000) - Number of products to delete</li>
+                    </ul>
+                    <p><strong>⚠️ Warning:</strong> This permanently deletes products. Images are queued for deletion via <code>/delete-associate-images</code></p>
+                    <p><strong>Examples:</strong></p>
+                    <pre style="background: #282c34; color: #abb2bf; padding: 15px; border-radius: 4px; overflow-x: auto;"># Delete 50 products from biustonosze category
+curl -X POST "<?php echo esc_html( $site_url ); ?>/wp-json/delete-images/v1/delete-cat-products?cat=biustonosze&limit=50" \
+     -H "X-API-Key: YOUR_API_KEY"
+
+# Delete 200 products from brazyliany category
+curl -X POST "<?php echo esc_html( $site_url ); ?>/wp-json/delete-images/v1/delete-cat-products?cat=brazyliany&limit=200" \
+     -H "X-API-Key: YOUR_API_KEY"</pre>
+                </div>
+            </div>
+
             <!-- Cleanup Stats Section -->
             <div style="background: #fff; padding: 20px; border: 1px solid #ccc; margin-bottom: 30px;">
                 <h2>Cleanup Statistics</h2>
@@ -1551,7 +1609,8 @@ register_deactivation_hook( __FILE__, [ 'WooCommerce_Auto_Stock_Cleanup', 'deact
 require_once( __DIR__ . '/includes/scheduler.php' );
 // include delete-duplicate-images.php
 require_once( __DIR__ . '/includes/delete-duplicate-images.php' );
-
+// include delete-duplicate-images.php
+require_once( __DIR__ . '/includes/delete-products-by-category.php' );
 
 // Initialize the plugin
 new WooCommerce_Auto_Stock_Cleanup();
