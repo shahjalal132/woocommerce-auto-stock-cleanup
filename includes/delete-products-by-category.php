@@ -25,9 +25,9 @@ class WC_Delete_Products_By_Category {
             'permission_callback' => '__return_true',
             'args'                => [
                 'cat'   => [
-                    'required'          => true,
+                    'required'          => false,
                     'validate_callback' => function ( $param ) {
-                        return is_string( $param ) && !empty( $param );
+                        return empty( $param ) || ( is_string( $param ) && !empty( $param ) );
                     },
                     'sanitize_callback' => 'sanitize_text_field',
                 ],
@@ -49,9 +49,9 @@ class WC_Delete_Products_By_Category {
             'permission_callback' => [ $this, 'rest_permission_check' ],
             'args'                => [
                 'cat'   => [
-                    'required'          => true,
+                    'required'          => false,
                     'validate_callback' => function ( $param ) {
-                        return is_string( $param ) && !empty( $param );
+                        return empty( $param ) || ( is_string( $param ) && !empty( $param ) );
                     },
                     'sanitize_callback' => 'sanitize_text_field',
                 ],
@@ -129,7 +129,7 @@ class WC_Delete_Products_By_Category {
         return new WP_REST_Response( [
             'success'  => true,
             'count'    => count( $products ),
-            'category' => $cat,
+            'category' => $cat ?: 'all',
             'limit'    => $limit,
             'products' => $products,
         ], 200 );
@@ -149,9 +149,9 @@ class WC_Delete_Products_By_Category {
         if ( empty( $products ) ) {
             return new WP_REST_Response( [
                 'success'       => true,
-                'message'       => 'No products found in category: ' . $cat,
+                'message'       => 'No products found' . ( $cat ? ' in category: ' . $cat : '' ),
                 'deleted_count' => 0,
-                'category'      => $cat,
+                'category'      => $cat ?: 'all',
             ], 200 );
         }
 
@@ -162,7 +162,7 @@ class WC_Delete_Products_By_Category {
 
         return new WP_REST_Response( [
             'success'                  => true,
-            'category'                 => $cat,
+            'category'                 => $cat ?: 'all',
             'products_deleted'         => $result['products_deleted'],
             'variations_deleted'       => $result['variations_deleted'],
             'stored_for_image_cleanup' => $result['stored_count'],
@@ -173,10 +173,11 @@ class WC_Delete_Products_By_Category {
     /**
      * Fetch products by category with all information
      */
-    private function fetch_products_by_category( $category, $limit = 100 ) {
+    private function fetch_products_by_category( $category = null, $limit = 100 ) {
         global $wpdb;
 
-        $query = $wpdb->prepare( "
+        // Build base query
+        $base_query = "
             SELECT 
                 p.ID AS product_id,
                 p.post_title AS product_name,
@@ -220,11 +221,21 @@ class WC_Delete_Products_By_Category {
                 p.post_type = 'product'
                 AND p.post_status = 'publish'
                 AND tt.taxonomy = 'product_cat'
-                AND t.slug = %s
-            GROUP BY p.ID
-            ORDER BY p.ID DESC
-            LIMIT %d
-        ", $category, $limit );
+        ";
+
+        // Add category filter if provided
+        if ( !empty( $category ) ) {
+            $query = $wpdb->prepare( 
+                $base_query . " AND t.slug = %s GROUP BY p.ID ORDER BY p.ID DESC LIMIT %d",
+                $category, 
+                $limit 
+            );
+        } else {
+            $query = $wpdb->prepare( 
+                $base_query . " GROUP BY p.ID ORDER BY p.ID DESC LIMIT %d",
+                $limit 
+            );
+        }
 
         return $wpdb->get_results( $query, ARRAY_A );
     }
