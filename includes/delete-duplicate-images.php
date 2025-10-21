@@ -3,18 +3,27 @@ class Delete_Duplicate_Unattached_Images {
 
     private $namespace = 'media-cleaner/v1';
     private $route     = '/scan';
+    private $route_fast = '/delete-fast';
 
     public function __construct() {
         add_action('rest_api_init', [$this, 'register_routes']);
     }
 
     /**
-     * Register REST API route
+     * Register REST API routes
      */
     public function register_routes() {
+        // Safe scan and delete with reference checking
         register_rest_route($this->namespace, $this->route, [
             'methods'  => 'POST',
             'callback' => [$this, 'scan_and_delete'],
+            'permission_callback' => '__return_true', // Replace with API key check if needed
+        ]);
+
+        // Fast delete without reference checking
+        register_rest_route($this->namespace, $this->route_fast, [
+            'methods'  => 'POST',
+            'callback' => [$this, 'delete_fast'],
             'permission_callback' => '__return_true', // Replace with API key check if needed
         ]);
     }
@@ -275,6 +284,77 @@ class Delete_Duplicate_Unattached_Images {
 
         // No references found
         return false;
+    }
+
+    /**
+     * Fast delete images without reference checking
+     * WARNING: This deletes images without checking if they're in use!
+     * 
+     * @param WP_REST_Request $request
+     * @return WP_REST_Response
+     */
+    public function delete_fast(WP_REST_Request $request) {
+        global $wpdb;
+
+        $limit   = intval($request->get_param('limit')) ?: 1000; // Default 1k
+        $max_limit = 10000; // Max 10k
+        
+        // Enforce max limit
+        if ($limit > $max_limit) {
+            $limit = $max_limit;
+        }
+
+        $last_id = intval(get_option('media_cleaner_fast_last_id', 0));
+
+        // Fetch images after last scanned ID
+        $attachments = $wpdb->get_results($wpdb->prepare("
+            SELECT ID, guid
+            FROM {$wpdb->posts}
+            WHERE post_type = 'attachment'
+            AND post_mime_type LIKE 'image%%'
+            AND ID > %d
+            ORDER BY ID ASC
+            LIMIT %d
+        ", $last_id, $limit));
+
+        if (empty($attachments)) {
+            update_option('media_cleaner_fast_last_id', 0);
+
+            return $this->response([
+                'status'      => 'done',
+                'message'     => 'All attachments processed, resetting progress.',
+                'processed'   => 0,
+                'deletedIds'  => [],
+                'deletedCount' => 0,
+            ]);
+        }
+
+        $processed = 0;
+        $deletedIds = [];
+
+        foreach ($attachments as $attachment) {
+            $processed++;
+            $last_id = $attachment->ID;
+
+            // Delete without checking references
+            $result = wp_delete_attachment($attachment->ID, true);
+            
+            if ($result) {
+                $deletedIds[] = $attachment->ID;
+            }
+        }
+
+        update_option('media_cleaner_fast_last_id', $last_id);
+
+        return $this->response([
+            'status'         => 'ok',
+            'message'        => 'Fast deletion completed successfully.',
+            'processed'      => $processed,
+            'deletedIds'     => $deletedIds,
+            'deletedCount'   => count($deletedIds),
+            'lastProcessedId' => $last_id,
+            'limit'          => $limit,
+        ]);
     }
 
     /**
