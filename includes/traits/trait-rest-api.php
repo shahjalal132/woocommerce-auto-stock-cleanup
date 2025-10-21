@@ -273,14 +273,20 @@ trait WC_REST_API_Trait {
         $record_ids_processed = [];
 
         foreach ( $records as $record ) {
+            error_log( "WC_REST_API: Processing record ID: " . $record['id'] . ", Product ID: " . $record['product_id'] . ", Attachment IDs: " . ( $record['attachment_ids'] ?: 'empty' ) );
+            
             if ( !empty( $record['attachment_ids'] ) ) {
                 $attachment_ids = array_filter( array_map( 'intval', explode( ',', $record['attachment_ids'] ) ) );
+                
+                error_log( "WC_REST_API: Parsed attachment IDs: " . implode( ', ', $attachment_ids ) );
 
                 foreach ( $attachment_ids as $attachment_id ) {
                     if ( WC_Deletion_Helper::delete_attachment_fast( $attachment_id ) ) {
                         $images_deleted++;
                     }
                 }
+            } else {
+                error_log( "WC_REST_API: No attachment IDs found for record " . $record['id'] );
             }
 
             $record_ids_processed[] = $record['id'];

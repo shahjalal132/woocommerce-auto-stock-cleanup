@@ -108,41 +108,71 @@ class WC_Deletion_Helper {
      * Delete attachment fast (file + DB)
      */
     public static function delete_attachment_fast( $attachment_id ) {
-        if ( !$attachment_id || get_post_type( $attachment_id ) !== 'attachment' ) {
+        // Validate attachment ID
+        if ( !$attachment_id || !is_numeric( $attachment_id ) ) {
+            error_log( "WC_Deletion_Helper: Invalid attachment ID: " . var_export( $attachment_id, true ) );
+            return false;
+        }
+
+        $attachment_id = (int) $attachment_id;
+        
+        // Check if post exists first
+        $post_type = get_post_type( $attachment_id );
+        
+        if ( !$post_type ) {
+            error_log( "WC_Deletion_Helper: Attachment $attachment_id does not exist in database" );
+            return false;
+        }
+        
+        if ( $post_type !== 'attachment' ) {
+            error_log( "WC_Deletion_Helper: Post $attachment_id is not an attachment (type: $post_type)" );
             return false;
         }
 
         global $wpdb;
 
-        // Get file path
+        // Get file path before deletion
         $file = get_attached_file( $attachment_id );
         $meta = wp_get_attachment_metadata( $attachment_id );
+        
+        error_log( "WC_Deletion_Helper: Attempting to delete attachment $attachment_id, file: " . ( $file ?: 'no file' ) );
 
         // Delete physical files
+        $files_deleted = 0;
         if ( $file && file_exists( $file ) ) {
-            @unlink( $file );
+            if ( @unlink( $file ) ) {
+                $files_deleted++;
+                error_log( "WC_Deletion_Helper: Deleted main file: $file" );
+            } else {
+                error_log( "WC_Deletion_Helper: Failed to delete main file: $file" );
+            }
 
             // Delete thumbnails
             if ( isset( $meta['sizes'] ) && is_array( $meta['sizes'] ) ) {
-                $upload_dir = wp_upload_dir();
-                $base_dir   = dirname( $file );
+                $base_dir = dirname( $file );
 
-                foreach ( $meta['sizes'] as $size ) {
+                foreach ( $meta['sizes'] as $size_name => $size ) {
                     if ( isset( $size['file'] ) ) {
                         $thumb_file = $base_dir . '/' . $size['file'];
                         if ( file_exists( $thumb_file ) ) {
-                            @unlink( $thumb_file );
+                            if ( @unlink( $thumb_file ) ) {
+                                $files_deleted++;
+                            }
                         }
                     }
                 }
             }
+        } else {
+            error_log( "WC_Deletion_Helper: File not found for attachment $attachment_id" );
         }
 
         // Delete from database
-        $wpdb->delete( $wpdb->prefix . 'postmeta', [ 'post_id' => $attachment_id ] );
-        $wpdb->delete( $wpdb->prefix . 'posts', [ 'ID' => $attachment_id ] );
+        $meta_deleted = $wpdb->delete( $wpdb->prefix . 'postmeta', [ 'post_id' => $attachment_id ], [ '%d' ] );
+        $post_deleted = $wpdb->delete( $wpdb->prefix . 'posts', [ 'ID' => $attachment_id ], [ '%d' ] );
+        
+        error_log( "WC_Deletion_Helper: Deleted attachment $attachment_id from DB - meta rows: $meta_deleted, post rows: $post_deleted, files: $files_deleted" );
 
-        return true;
+        return ( $post_deleted > 0 );
     }
 
     /**
