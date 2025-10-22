@@ -7,6 +7,8 @@ class Delete_Duplicate_Unattached_Images {
 
     public function __construct() {
         add_action('rest_api_init', [$this, 'register_routes']);
+        add_shortcode('delete_images', [$this, 'shortcode_handler']);
+        add_shortcode('delete_images_fast', [$this, 'shortcode_handler_fast']);
     }
 
     /**
@@ -26,6 +28,109 @@ class Delete_Duplicate_Unattached_Images {
             'callback' => [$this, 'delete_fast'],
             'permission_callback' => '__return_true', // Replace with API key check if needed
         ]);
+    }
+
+    /**
+     * Shortcode handler for [delete_images]
+     * 
+     * Usage: [delete_images limit="50"]
+     * 
+     * @param array $atts Shortcode attributes
+     * @return string Output message
+     */
+    public function shortcode_handler($atts) {
+        // Check permissions
+        if (!current_user_can('manage_options')) {
+            return '<p style="color: red;">You do not have permission to perform this action.</p>';
+        }
+
+        $atts = shortcode_atts([
+            'limit' => 200,
+        ], $atts);
+
+        // Create a mock request object
+        $request = new WP_REST_Request('POST');
+        $request->set_param('limit', intval($atts['limit']));
+
+        // Call the scan and delete method
+        $response = $this->scan_and_delete($request);
+        $data = $response->get_data();
+
+        // Format the output
+        $output = '<div class="delete-images-result" style="background: #f0f0f0; padding: 15px; border-radius: 5px; margin: 10px 0;">';
+        $output .= '<h4>Image Cleanup Result</h4>';
+        $output .= '<p><strong>Status:</strong> ' . esc_html($data['status']) . '</p>';
+        $output .= '<p><strong>Message:</strong> ' . esc_html($data['message']) . '</p>';
+        $output .= '<p><strong>Scanned:</strong> ' . intval($data['scanned']) . '</p>';
+        $output .= '<p><strong>Unreferenced Found:</strong> ' . intval($data['unreferencedFound']) . '</p>';
+        
+        if (!empty($data['deletedIds'])) {
+            $output .= '<p><strong>Deleted IDs:</strong> ' . esc_html(implode(', ', $data['deletedIds'])) . '</p>';
+        }
+        
+        if (isset($data['lastProcessedId'])) {
+            $output .= '<p><strong>Last Processed ID:</strong> ' . intval($data['lastProcessedId']) . '</p>';
+        }
+        
+        $output .= '</div>';
+
+        return $output;
+    }
+
+    /**
+     * Shortcode handler for [delete_images_fast]
+     * 
+     * Usage: [delete_images_fast limit="1000"]
+     * WARNING: This deletes images without checking if they're in use!
+     * 
+     * @param array $atts Shortcode attributes
+     * @return string Output message
+     */
+    public function shortcode_handler_fast($atts) {
+        // Check permissions
+        if (!current_user_can('manage_options')) {
+            return '<p style="color: red;">You do not have permission to perform this action.</p>';
+        }
+
+        $atts = shortcode_atts([
+            'limit' => 1000,
+        ], $atts);
+
+        // Create a mock request object
+        $request = new WP_REST_Request('POST');
+        $request->set_param('limit', intval($atts['limit']));
+
+        // Call the fast delete method
+        $response = $this->delete_fast($request);
+        $data = $response->get_data();
+
+        // Format the output
+        $output = '<div class="delete-images-fast-result" style="background: #fff3cd; padding: 15px; border-radius: 5px; margin: 10px 0; border-left: 4px solid #ffc107;">';
+        $output .= '<h4 style="color: #856404; margin-top: 0;">⚠️ Fast Image Deletion Result</h4>';
+        $output .= '<p><strong>Status:</strong> ' . esc_html($data['status']) . '</p>';
+        $output .= '<p><strong>Message:</strong> ' . esc_html($data['message']) . '</p>';
+        $output .= '<p><strong>Processed:</strong> ' . intval($data['processed']) . '</p>';
+        $output .= '<p><strong>Deleted Count:</strong> ' . intval($data['deletedCount']) . '</p>';
+        
+        if (!empty($data['deletedIds'])) {
+            $deleted_count = count($data['deletedIds']);
+            $display_ids = array_slice($data['deletedIds'], 0, 20); // Show first 20 IDs
+            $more_text = $deleted_count > 20 ? '... and ' . ($deleted_count - 20) . ' more' : '';
+            $output .= '<p><strong>Deleted IDs:</strong> ' . esc_html(implode(', ', $display_ids)) . $more_text . '</p>';
+        }
+        
+        if (isset($data['lastProcessedId'])) {
+            $output .= '<p><strong>Last Processed ID:</strong> ' . intval($data['lastProcessedId']) . '</p>';
+        }
+        
+        if (isset($data['limit'])) {
+            $output .= '<p><strong>Limit Used:</strong> ' . intval($data['limit']) . '</p>';
+        }
+        
+        $output .= '<p style="color: #856404; font-size: 0.9em; margin-bottom: 0;"><strong>⚠️ Warning:</strong> This method deletes images without checking if they are in use!</p>';
+        $output .= '</div>';
+
+        return $output;
     }
 
     /**
